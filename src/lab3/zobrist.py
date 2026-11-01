@@ -1,26 +1,38 @@
-from utils import get_digit_flag
-from cell import Cell
-import numpy as np
+import random
+import typing as tp
 
-class Hash:
-    def __init__(self):
-        self.zobrist: int = 0
+SEED = 47
+Table = tp.Tuple[tp.Tuple[int, ...], ...]
 
-        np.random.seed(47)
-        rng = np.random.default_rng()
-        self.hash_table: np.ndarray[tuple[int, int, int], np.dtype[np.uint64]] = rng.integers(
-            0, 2**64, size=(9, 9, 10), dtype=np.uint64
-        )
 
-    def __eq__(self, other: Hash):
-        return self.zobrist == other.zobrist
-    
-    def __hash__(self):
-        return self.zobrist
-    
-    def __ixor__(self, other: Cell):
-        for i in range(10):
-            if Cell.read_state(i):
-                zobrist ^= (self.hash_table[Cell.get_row()][Cell.get_col()][i])
-    
+def build_table(seed: int = SEED) -> Table:
+    """Таблица 81×10 случайных 64-битных чисел; столбец = номер бита состояния."""
+    rng = random.Random(seed)
+    return tuple(tuple(rng.getrandbits(64) for _ in range(10)) for _ in range(81))
 
+
+ZOBRIST = build_table()
+
+
+def cell_hash(idx: int, state: int) -> int:
+    """Хэш клетки: XOR значений таблицы по установленным битам состояния."""
+    row = ZOBRIST[idx]
+    h = 0
+    while state:
+        low = state & -state
+        h ^= row[low.bit_length() - 1]
+        state ^= low
+    return h
+
+
+def hash_state(states: tp.Sequence[int]) -> int:
+    """Полный пересчёт хэша доски по списку состояний (81 int)."""
+    h = 0
+    for idx, state in enumerate(states):
+        h ^= cell_hash(idx, state)
+    return h
+
+
+def hash_delta(idx: int, old: int, new: int) -> int:
+    """Изменение хэша при смене состояния клетки: XOR по битам old ^ new."""
+    return cell_hash(idx, old ^ new)
