@@ -434,3 +434,41 @@ def test_node_count_regression(name, budget):
     stats = SolveStats()
     assert solver.solve_board(Board.from_grid(grid), SolverConfig(), stats) is not None
     assert stats.nodes <= budget
+
+def test_count_solutions_limits():
+    b = empty_board()
+    assert solver.count_solutions(b, limit=1) == 1
+    assert solver.count_solutions(b) == 2  # у пустой доски решений больше двух
+    assert solver.count_solutions(b, limit=5) == 5
+    with pytest.raises(ValueError):
+        solver.count_solutions(b, limit=0)
+
+
+def test_count_solutions_unique_and_none(puzzle1_grid, puzzle1_solution):
+    assert solver.count_solutions(Board.from_grid(puzzle1_grid)) == 1
+    assert solver.count_solutions(Board.from_grid(puzzle1_solution)) == 1
+    assert solver.count_solutions(conflicting_singles_board()) == 0
+
+
+def test_count_solutions_does_not_mutate_and_counts_nodes(puzzle1_grid):
+    b = Board.from_grid(puzzle1_grid)
+    snap = snapshot(b)
+    stats = SolveStats()
+    solver.count_solutions(b, stats=stats)
+    assert snapshot(b) == snap and stats.nodes >= 1
+
+
+def test_count_solutions_with_patterns(puzzle1_grid):
+    cfg = SolverConfig(subsets=3, pointing=True)
+    assert solver.count_solutions(Board.from_grid(puzzle1_grid), cfg=cfg) == 1
+
+
+def test_is_unique(puzzle1_grid, puzzle1_solution):
+    assert sudoku.is_unique(puzzle1_grid) is True
+    assert sudoku.is_unique(puzzle1_solution) is True
+    one_digit = [["."] * 9 for _ in range(9)]
+    one_digit[0][0] = "5"
+    assert sudoku.is_unique(one_digit) is False  # много решений
+    dup = [["."] * 9 for _ in range(9)]
+    dup[0][0] = dup[0][1] = "5"
+    assert sudoku.is_unique(dup) is False  # противоречие во входе

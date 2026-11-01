@@ -3,7 +3,7 @@ import random
 import typing as tp
 
 from board import Board
-from solver import solve_board
+from solver import count_solutions, solve_board
 
 T = tp.TypeVar("T")
 
@@ -193,6 +193,10 @@ def solve(grid: tp.List[tp.List[str]]) -> tp.Optional[tp.List[tp.List[str]]]:
     solved = solve_board(board)
     return None if solved is None else solved.to_grid()
 
+def is_unique(grid: tp.List[tp.List[str]]) -> bool:
+    """True, если у пазла ровно одно решение (противоречивый пазл даёт False)."""
+    board = Board.from_grid(grid)
+    return board is not None and count_solutions(board, 2) == 1
 
 def check_solution(solution: tp.Optional[tp.List[tp.List[str]]]) -> bool:
     """ Если решение solution верно, то вернуть True, в противном случае False

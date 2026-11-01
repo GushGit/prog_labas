@@ -237,3 +237,33 @@ def solve_board(
     if stats is None:
         stats = SolveStats()
     return search(board.copy(), cfg, stats, set())
+
+def _count(board: Board, cfg: SolverConfig, stats: SolveStats, limit: int) -> int:
+    """Число решений доски (мутирует её), поиск прекращается при достижении limit."""
+    stats.nodes += 1
+    if not propagate(board, cfg, stats):
+        return 0
+    if not board.empty_mask:
+        return 1
+    idx = CELL_STRATEGIES[cfg.cell_strategy](board)
+    total = 0
+    for d in BRANCH_STRATEGIES[cfg.branch_strategy](board, idx):
+        child = board.copy()
+        if not child.place(idx, d):
+            continue
+        total += _count(child, cfg, stats, limit - total)
+        if total >= limit:
+            break
+    return total
+
+
+def count_solutions(
+    board: Board,
+    limit: int = 2,
+    cfg: SolverConfig = DEFAULT_CONFIG,
+    stats: tp.Optional[SolveStats] = None,
+) -> int:
+    """Число решений, но не больше limit (по умолчанию 2: «0, 1 или несколько»). Вход не меняется."""
+    if limit < 1:
+        raise ValueError("limit должен быть не меньше 1")
+    return _count(board.copy(), cfg, stats or SolveStats(), limit)
