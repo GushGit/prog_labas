@@ -1,0 +1,12 @@
+[run]
+omit =
+    tests/*
+    test_sudoku.py
+    .venv/*
+    venv/*
+    env/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
