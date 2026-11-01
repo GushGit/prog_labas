@@ -7,6 +7,8 @@ import platform
 import pstats
 import random
 import sys
+import os
+from concurrent.futures import ProcessPoolExecutor
 import time
 import typing as tp
 from dataclasses import dataclass
@@ -244,6 +246,35 @@ def run_rows(puzzles: tp.List[tp.Tuple[str, Grid]],
         report_progress(label, len(puzzles), len(puzzles), "готово")
     return rows
 
+def _solve_task(task: tp.Tuple[str, Grid, SolverConfig]) -> BenchRow:
+    """Задача для процесса: один пазл, один прогон (верхнеуровневая функция для pickle)."""
+    name, grid, cfg = task
+    return bench_solver(name, grid, cfg, repeat=1)
+
+
+def run_parallel(puzzles: tp.List[tp.Tuple[str, Grid]], cfg: SolverConfig = DEFAULT_CONFIG,
+                 workers: tp.Optional[int] = None) -> tp.List[BenchRow]:
+    """Решить набор в нескольких процессах; порядок строк совпадает с порядком puzzles."""
+    tasks = [(name, grid, cfg) for name, grid in puzzles]
+    with ProcessPoolExecutor(max_workers=workers or os.cpu_count()) as pool:
+        return list(pool.map(_solve_task, tasks, chunksize=max(1, len(tasks) // 64)))
+
+
+def compare_parallel(puzzles: tp.List[tp.Tuple[str, Grid]], cfg: SolverConfig = DEFAULT_CONFIG,
+                     workers: tp.Optional[int] = None) -> str:
+    """Общее время набора: последовательно против процессов, плюс ускорение."""
+    start = time.perf_counter()
+    seq = [bench_solver(n, g, cfg, repeat=1) for n, g in puzzles]
+    t_seq = time.perf_counter() - start
+    start = time.perf_counter()
+    par = run_parallel(puzzles, cfg, workers)
+    t_par = time.perf_counter() - start
+    same = [(r.puzzle, r.nodes, r.note) for r in seq] == [(r.puzzle, r.nodes, r.note) for r in par]
+    speedup = t_seq / t_par if t_par else float("inf")
+    return (f"процессов {workers or os.cpu_count()}: последовательно {t_seq * 1000:.1f} мс, "
+            f"параллельно {t_par * 1000:.1f} мс, ускорение x{speedup:.2f}, "
+            f"результаты совпадают: {'да' if same else 'НЕТ'}")
+
 def compare_configs(configs: tp.Dict[str, SolverConfig],
                     puzzles: tp.List[tp.Tuple[str, Grid]], repeat: int = 3,
                     progress: bool = False) -> str:
@@ -276,6 +307,8 @@ def main(argv: tp.Optional[tp.List[str]] = None) -> None:  # pragma: no cover
     parser.add_argument("--strategies", action="store_true", help="сравнить стратегии и memo")
     parser.add_argument("--all-cells", action="store_true", help="сравнить branch_all_cells")
     parser.add_argument("--no-progress", action="store_true", help="не показывать прогресс")
+    parser.add_argument("--parallel", action="store_true", help="сравнить последовательный и параллельный прогон")
+    parser.add_argument("--workers", type=int, default=None, help="число процессов для --parallel")
     args = parser.parse_args(argv)
     show = not args.no_progress
     print(f"Python {platform.python_version()}, {platform.platform()}")
@@ -284,6 +317,9 @@ def main(argv: tp.Optional[tp.List[str]] = None) -> None:  # pragma: no cover
         print("hard_puzzles.txt не найден: пропущено")
     if not (ROOT / "puzzles").is_dir():
         print("папка puzzles не найдена: пропущено")
+    if args.parallel:
+        print(compare_parallel(puzzles, DEFAULT_CONFIG, args.workers))
+        return
     chosen = [d for flag, d in ((args.experiment, EXPERIMENTS),
                                 (args.strategies, STRATEGY_EXPERIMENTS),
                                 (args.all_cells, ALL_CELLS_EXPERIMENTS)) if flag]

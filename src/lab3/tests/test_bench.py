@@ -272,3 +272,21 @@ def test_compare_configs_with_progress(capsys):
     puzzles = bench.generated_puzzles(1)
     bench.compare_configs({"cfg": SolverConfig()}, puzzles, repeat=1, progress=True)
     assert "cfg" in capsys.readouterr().err
+
+def test_run_parallel_matches_sequential():
+    puzzles = bench.generated_puzzles(4)
+    par = bench.run_parallel(puzzles, workers=2)
+    seq = [bench.bench_solver(n, g, repeat=1) for n, g in puzzles]
+    assert [r.puzzle for r in par] == [n for n, _ in puzzles]
+    assert [(r.nodes, r.note) for r in par] == [(r.nodes, r.note) for r in seq]
+
+
+def test_solve_task():
+    name, grid = bench.generated_puzzles(1)[0]
+    row = bench._solve_task((name, grid, SolverConfig()))
+    assert row.puzzle == name and row.seconds is not None
+
+
+def test_compare_parallel():
+    text = bench.compare_parallel(bench.generated_puzzles(3), workers=2)
+    assert "результаты совпадают: да" in text and "ускорение" in text
