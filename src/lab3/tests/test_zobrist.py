@@ -56,3 +56,30 @@ def test_hash_delta_updates_incrementally():
 def test_hash_delta_single_note_is_one_xor():
     assert hash_delta(3, 1022, 1022 ^ (1 << 5)) == ZOBRIST[3][5]
     assert hash_delta(3, 77, 77) == 0
+
+def test_no_collisions_on_random_walk():
+    """Случайное блуждание по надмножеству достижимых позиций: разные позиции дают разные хэши."""
+    rng = random.Random(2024)
+    states = [1022] * 81
+    h = hash_state(states)
+    seen = {h: tuple(states)}
+    distinct = 1
+    for step in range(20000):
+        idx = rng.randrange(81)
+        old = states[idx]
+        if rng.random() < 0.7:
+            new = old ^ (1 << rng.randint(1, 9))  # флип заметки, любое состояние допустимо
+        else:
+            new = 1 | (1 << rng.randint(1, 9))  # «вписать» цифру без чистки заметок
+        h ^= hash_delta(idx, old, new)
+        states[idx] = new
+        if step % 500 == 0:
+            assert h == hash_state(states)
+        key = tuple(states)
+        if h in seen:
+            assert seen[h] == key  # тот же хэш допустим только у той же позиции
+        else:
+            seen[h] = key
+            distinct += 1
+    assert distinct > 15000
+    assert len(seen) == distinct
