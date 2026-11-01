@@ -3,11 +3,11 @@ from __future__ import annotations
 import typing as tp
 from dataclasses import dataclass
 
-from board import Board
+from board import REGION_MASKS, Board
 from cell import notes_of
 
 from patterns import process_region
-from region import REGIONS
+from region import CELL_REGIONS, REGIONS
 
 @dataclass
 class SolveStats:
@@ -33,19 +33,88 @@ def branch_asc(board: Board, idx: int) -> tp.List[int]:
     return notes_of(board.states[idx])
 
 
-CELL_STRATEGIES: tp.Dict[str, tp.Callable[[Board], int]] = {"mrv": select_cell_mrv}
-BRANCH_STRATEGIES: tp.Dict[str, tp.Callable[[Board, int], tp.List[int]]] = {"asc": branch_asc}
+class NodeLimitExceeded(Exception):
+    """Поиск превысил SolverConfig.max_nodes."""
+
+
+AREA_MASK = tuple(REGION_MASKS[a] | REGION_MASKS[b] | REGION_MASKS[c] for a, b, c in CELL_REGIONS)
+
+
+def select_cell_mrv_degree(board: Board) -> int:
+    """Как mrv, но при ничьей берётся клетка с меньшей суммой открытых клеток в её регионах."""
+    for count in range(2, 10):
+        mask = board.buckets[count]
+        if not mask:
+            continue
+        best, best_key = -1, 1 << 30
+        while mask:
+            low = mask & -mask
+            idx = low.bit_length() - 1
+            mask ^= low
+            key = sum((board.empty_mask & REGION_MASKS[r]).bit_count() for r in CELL_REGIONS[idx])
+            if key < best_key:  # строго меньше: при равенстве остаётся младший индекс
+                best, best_key = idx, key
+        return best
+    raise ValueError("Нет клетки для ветвления")
+
+
+def select_cell_digit_min(board: Board) -> int:
+    """Клетка, содержащая цифру с наименьшим числом кандидатов на всей доске (младший индекс)."""
+    best_d, best_count = 0, 82
+    for d in range(1, 10):
+        count = board.digit_cells[d].bit_count()
+        if 0 < count < best_count:
+            best_d, best_count = d, count
+    if not best_d:
+        raise ValueError("Нет клетки для ветвления")
+    mask = board.digit_cells[best_d]
+    return (mask & -mask).bit_length() - 1
+
+
+def branch_rare_first(board: Board, idx: int) -> tp.List[int]:
+    """Цифры клетки по возрастанию числа кандидатов цифры в трёх её регионах."""
+    area = AREA_MASK[idx]
+    return sorted(notes_of(board.states[idx]), key=lambda d: (board.digit_cells[d] & area).bit_count())
+
+
+def candidate_cells(board: Board) -> tp.List[int]:
+    """Все клетки с >= 2 заметок: по возрастанию числа заметок, затем индекса."""
+    cells: tp.List[int] = []
+    for count in range(2, 10):
+        mask = board.buckets[count]
+        while mask:
+            low = mask & -mask
+            cells.append(low.bit_length() - 1)
+            mask ^= low
+    return cells
+
+
+CELL_STRATEGIES: tp.Dict[str, tp.Callable[[Board], int]] = {
+    "mrv": select_cell_mrv,
+    "mrv_degree": select_cell_mrv_degree,
+    "digit_min": select_cell_digit_min,
+}
+BRANCH_STRATEGIES: tp.Dict[str, tp.Callable[[Board, int], tp.List[int]]] = {
+    "asc": branch_asc,
+    "rare_first": branch_rare_first,
+}
 
 
 @dataclass(frozen=True)
 class SolverConfig:
-    """Настройки решателя. subsets: 0 (выкл.), 2 (пары) или 3 (пары и тройки)."""
+    """Настройки решателя. subsets: 0 (выкл.), 2 (пары) или 3 (пары и тройки).
+
+    branch_all_cells: перебор нескольких клеток по схеме студента (только для замеров memo).
+    max_nodes: лимит узлов поиска, 0 = без лимита (NodeLimitExceeded).
+    """
 
     memo: bool = True
     cell_strategy: str = "mrv"
     branch_strategy: str = "asc"
     subsets: int = 0
     pointing: bool = False
+    branch_all_cells: bool = False
+    max_nodes: int = 0
 
     def __post_init__(self) -> None:
         if self.cell_strategy not in CELL_STRATEGIES:
@@ -54,10 +123,11 @@ class SolverConfig:
             raise ValueError(f"Неизвестная стратегия ветки: {self.branch_strategy!r}")
         if self.subsets not in (0, 2, 3):
             raise ValueError(f"subsets должен быть 0, 2 или 3, а не {self.subsets!r}")
+        if self.max_nodes < 0:
+            raise ValueError("max_nodes не может быть отрицательным")
 
 
 DEFAULT_CONFIG = SolverConfig()
-
 
 def obvious_singles(board: Board) -> bool:
     """Ставит клетки с единственной заметкой до исчерпания. False: противоречие."""
@@ -128,6 +198,8 @@ def search(
 ) -> tp.Optional[Board]:
     """DFS. Доска мутируется (передавайте копию). Возвращает решённую доску или None."""
     stats.nodes += 1
+    if cfg.max_nodes and stats.nodes > cfg.max_nodes:
+        raise NodeLimitExceeded
     if depth > stats.max_depth:
         stats.max_depth = depth
     if cfg.memo:
@@ -140,14 +212,19 @@ def search(
         return None
     if not board.empty_mask:
         return board
-    idx = CELL_STRATEGIES[cfg.cell_strategy](board)
-    for d in BRANCH_STRATEGIES[cfg.branch_strategy](board, idx):
-        child = board.copy()
-        if not child.place(idx, d):
-            continue
-        result = search(child, cfg, stats, visited, depth + 1)
-        if result is not None:
-            return result
+    if cfg.branch_all_cells:
+        cells = candidate_cells(board)
+    else:
+        cells = [CELL_STRATEGIES[cfg.cell_strategy](board)]
+    branch = BRANCH_STRATEGIES[cfg.branch_strategy]
+    for idx in cells:
+        for d in branch(board, idx):
+            child = board.copy()
+            if not child.place(idx, d):
+                continue
+            result = search(child, cfg, stats, visited, depth + 1)
+            if result is not None:
+                return result
     return None
 
 
