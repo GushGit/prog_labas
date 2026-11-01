@@ -159,6 +159,23 @@ def summarize(rows: tp.List[BenchRow]) -> str:
     return (f"решено {len(timed)} из {len(rows)}, сумма {total_ms:.1f} мс, "
             f"худший {worst.puzzle} {tp.cast(float, worst.seconds) * 1000:.1f} мс, узлов {nodes}")
 
+EXPERIMENTS: tp.Dict[str, SolverConfig] = {
+    "singles": SolverConfig(),
+    "+pairs": SolverConfig(subsets=2),
+    "+threes": SolverConfig(subsets=3),
+    "+pointing": SolverConfig(subsets=3, pointing=True),
+    "pointing only": SolverConfig(pointing=True),
+}
+
+def compare_configs(configs: tp.Dict[str, SolverConfig],
+                    puzzles: tp.List[tp.Tuple[str, Grid]], repeat: int = 3) -> str:
+    """Строка-итог summarize на каждую конфигурацию (одинаковый набор пазлов)."""
+    lines = []
+    for name, cfg in configs.items():
+        rows = [bench_solver(n, g, cfg, repeat) for n, g in puzzles]
+        lines.append(f"{name:<14} {summarize(rows)}")
+    return "\n".join(lines)
+
 def profile_call(func: tp.Callable[[], tp.Any], top: int = 15) -> str:
     """Профиль cProfile вызова func (сортировка по накопленному времени)."""
     profiler = cProfile.Profile()
@@ -175,11 +192,15 @@ def main(argv: tp.Optional[tp.List[str]] = None) -> None:  # pragma: no cover
     parser.add_argument("--max-steps", type=int, default=100_000)
     parser.add_argument("--limit", type=int, default=100, help="сколько пазлов брать из hard_puzzles.txt")
     parser.add_argument("--skip-naive", action="store_true", help="не гонять solve_naive")
+    parser.add_argument("--experiment", action="store_true", help="сравнить конфигурации паттернов")
     args = parser.parse_args(argv)
     print(f"Python {platform.python_version()}, {platform.platform()}")
     puzzles = collect_puzzles(ROOT, 20, args.limit)
     if not (ROOT / "hard_puzzles.txt").exists():
         print("hard_puzzles.txt не найден: пропущено")
+    if args.experiment:
+        print(compare_configs(EXPERIMENTS, puzzles, args.repeat))
+        return
     if not args.skip_naive:
         rows = [bench_naive(n, g, args.repeat, args.max_steps) for n, g in puzzles]
         print("solve_naive\n" + summarize(rows))

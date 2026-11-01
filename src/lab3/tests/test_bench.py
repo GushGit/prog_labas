@@ -4,6 +4,7 @@ import pytest
 
 import bench
 import sudoku
+from solver import SolverConfig
 
 
 def dead_end_grid():
@@ -160,3 +161,16 @@ def test_summarize():
     assert "решено 2 из 3" in text and "сумма 5.0 мс" in text
     assert "худший b 4.0 мс" in text and "узлов 8" in text
     assert bench.summarize([bench.BenchRow("c", note="пропуск")]) == "решено 0 из 1"
+
+def test_experiments_cover_expected_configs():
+    assert list(bench.EXPERIMENTS) == ["singles", "+pairs", "+threes", "+pointing", "pointing only"]
+    assert bench.EXPERIMENTS["+pointing"] == SolverConfig(subsets=3, pointing=True)
+
+
+def test_compare_configs():
+    puzzles = bench.generated_puzzles(2)
+    configs = {"a": SolverConfig(), "b": SolverConfig(subsets=2)}
+    lines = bench.compare_configs(configs, puzzles, repeat=1).splitlines()
+    assert len(lines) == 2
+    assert lines[0].startswith("a") and lines[1].startswith("b")
+    assert all("решено 2 из 2" in line for line in lines)

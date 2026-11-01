@@ -1,3 +1,4 @@
+import pathlib
 import random
 
 import pytest
@@ -250,3 +251,73 @@ def test_sudoku_solve_edge_cases(puzzle1_grid, puzzle1_solution):
     dup = [["."] * 9 for _ in range(9)]
     dup[0][0] = dup[0][1] = "5"
     assert sudoku.solve(dup) is None
+
+PUZZLE_DIR = pathlib.Path(__file__).parent.parent
+PATTERN_CONFIGS = [
+    SolverConfig(subsets=2),
+    SolverConfig(subsets=3),
+    SolverConfig(pointing=True),
+    SolverConfig(subsets=3, pointing=True),
+    SolverConfig(subsets=3, pointing=True, memo=False),
+]
+
+
+def stuck_pair_board():
+    """Клетки 0, 1, 2 строки 0 сведены к {1, 2}: три клетки на две цифры."""
+    b = empty_board()
+    for idx in (0, 1, 2):
+        for d in range(3, 10):
+            assert b.eliminate(idx, d)
+    return b
+
+
+def test_config_subsets_and_pointing_options():
+    for ok in (0, 2, 3):
+        assert SolverConfig(subsets=ok).subsets == ok
+    for bad in (1, 4, -1):
+        with pytest.raises(ValueError):
+            SolverConfig(subsets=bad)
+    assert DEFAULT_CONFIG.subsets == 0 and DEFAULT_CONFIG.pointing is False
+
+
+def test_propagate_patterns_find_contradiction_that_singles_miss():
+    b = stuck_pair_board()
+    assert solver.propagate(b.copy(), DEFAULT_CONFIG) is True
+    assert solver.propagate(b, SolverConfig(subsets=2)) is False
+
+
+def test_propagate_counts_region_visits():
+    grid = sudoku.read_sudoku(PUZZLE_DIR / "puzzle2.txt")
+    stats = SolveStats()
+    b = Board.from_grid(grid)
+    assert solver.propagate(b, SolverConfig(subsets=3, pointing=True), stats) is True
+    assert stats.region_visits > 0 and b.dirty == 0
+    b.validate()
+    stats = SolveStats()
+    assert solver.propagate(Board.from_grid(grid), DEFAULT_CONFIG, stats) is True
+    assert stats.region_visits == 0
+
+
+@pytest.mark.parametrize("cfg", PATTERN_CONFIGS)
+@pytest.mark.parametrize("name", ["puzzle1", "puzzle2", "puzzle3"])
+def test_pattern_configs_solve_named_puzzles(cfg, name):
+    grid = sudoku.read_sudoku(PUZZLE_DIR / f"{name}.txt")
+    stats = SolveStats()
+    solved = solver.solve_board(Board.from_grid(grid), cfg, stats)
+    result = solved.to_grid()
+    assert sudoku.check_solution(result)
+    assert all(grid[r][c] in (".", result[r][c]) for r in range(9) for c in range(9))
+    assert stats.region_visits > 0
+
+
+def test_search_skips_branch_that_fails_to_place():
+    b = empty_board()
+    for idx in (21, 30, 39, 48, 57, 66, 75):
+        assert b.eliminate(idx, 5)  # 5 в столбце 3 только в клетках 3 и 12
+    for d in (1, 2, 3, 4, 7, 8, 9):
+        assert b.eliminate(4, d)  # у клетки 4 остались заметки 5 и 6
+    assert b.copy().place(4, 5) is False  # ставя 5, мы лишаем столбец 3 обоих кандидатов
+    stats = SolveStats()
+    result = solver.search(b, SolverConfig(memo=False), stats, set())
+    assert result is not None and sudoku.check_solution(result.to_grid())
+    assert stats.nodes >= 2  # ветка 5 отброшена, ветка 6 пройдена

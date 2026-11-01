@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from board import Board
 from cell import notes_of
 
+from patterns import process_region
+from region import REGIONS
 
 @dataclass
 class SolveStats:
@@ -37,17 +39,21 @@ BRANCH_STRATEGIES: tp.Dict[str, tp.Callable[[Board, int], tp.List[int]]] = {"asc
 
 @dataclass(frozen=True)
 class SolverConfig:
-    """Настройки решателя."""
+    """Настройки решателя. subsets: 0 (выкл.), 2 (пары) или 3 (пары и тройки)."""
 
     memo: bool = True
     cell_strategy: str = "mrv"
     branch_strategy: str = "asc"
+    subsets: int = 0
+    pointing: bool = False
 
     def __post_init__(self) -> None:
         if self.cell_strategy not in CELL_STRATEGIES:
             raise ValueError(f"Неизвестная стратегия клетки: {self.cell_strategy!r}")
         if self.branch_strategy not in BRANCH_STRATEGIES:
             raise ValueError(f"Неизвестная стратегия ветки: {self.branch_strategy!r}")
+        if self.subsets not in (0, 2, 3):
+            raise ValueError(f"subsets должен быть 0, 2 или 3, а не {self.subsets!r}")
 
 
 DEFAULT_CONFIG = SolverConfig()
@@ -81,15 +87,36 @@ def hidden_singles(board: Board) -> bool:
     return True
 
 
-def propagate(board: Board, cfg: SolverConfig = DEFAULT_CONFIG) -> bool:
+def propagate(
+    board: Board,
+    cfg: SolverConfig = DEFAULT_CONFIG,
+    stats: tp.Optional[SolveStats] = None,
+) -> bool:
     """Распространение до неподвижной точки. False: противоречие.
 
-    Пока только singles; паттерны по «грязным» регионам добавятся в итерации 5.
+    Singles работают событийно. Когда они исчерпаны, по одному берутся «грязные» регионы
+    (где менялись заметки), и каждый разбирается паттернами. Результативный проход
+    возвращает цикл к singles.
     """
-    while board.buckets[1] or board.pending:
-        if not obvious_singles(board) or not hidden_singles(board):
-            return False
-    return True
+    patterns_on = cfg.subsets >= 2 or cfg.pointing
+    while True:
+        while board.buckets[1] or board.pending:
+            if not obvious_singles(board) or not hidden_singles(board):
+                return False
+        if not patterns_on:
+            return True
+        changed = False
+        while board.dirty and not changed:
+            low = board.dirty & -board.dirty
+            board.dirty ^= low
+            if stats is not None:
+                stats.region_visits += 1
+            result = process_region(board, REGIONS[low.bit_length() - 1], cfg)
+            if result is None:
+                return False
+            changed = result
+        if not changed:
+            return True
 
 
 def search(
@@ -109,7 +136,7 @@ def search(
             stats.memo_hits += 1
             return None
         visited.add(key)
-    if not propagate(board, cfg):
+    if not propagate(board, cfg, stats):
         return None
     if not board.empty_mask:
         return board
