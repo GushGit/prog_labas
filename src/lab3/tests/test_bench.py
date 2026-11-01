@@ -23,11 +23,24 @@ def test_load_hard_puzzles_missing(tmp_path):
     assert bench.load_hard_puzzles(tmp_path / "no.txt") == []
 
 
+def test_parse_puzzle_line():
+    line = "53..7....6..195....98....6.8...6...34..8.3..17...2...6.6....28....419..5....8..79"
+    grid = bench.parse_puzzle_line(line)
+    assert grid[0] == list("53..7....") and len(grid) == 9
+    assert bench.parse_puzzle_line(line.replace(".", "0")) == grid  # 0 = пусто
+    assert bench.parse_puzzle_line(f"7,{line},{'1' * 81}") == grid  # CSV: первый токен
+    assert bench.parse_puzzle_line("id,puzzle,solution") is None
+    assert bench.parse_puzzle_line(line[:80]) is None
+    assert bench.parse_puzzle_line(line[:80] + "x") is None
+
+
 def test_load_hard_puzzles_present(tmp_path):
+    line = "." * 81
     path = tmp_path / "hard.txt"
-    path.write_text("x")
-    with pytest.raises(NotImplementedError):
-        bench.load_hard_puzzles(path)
+    path.write_text(f"заголовок\n{line}\n\n1,{line}\n{line}\n")
+    assert len(bench.load_hard_puzzles(path)) == 3  # мусорные строки пропущены
+    assert len(bench.load_hard_puzzles(path, limit=2)) == 2
+    assert bench.load_hard_puzzles(path, limit=0) == []
 
 
 def test_generated_puzzles_deterministic():
@@ -121,3 +134,29 @@ def test_run_solver_benchmark():
     rows = bench.run_solver_benchmark(repeat=1, generated=2)
     assert [r.puzzle for r in rows] == ["puzzle1", "puzzle2", "puzzle3", "gen0", "gen1"]
     assert all(r.seconds is not None for r in rows)
+
+def test_collect_puzzles_with_hard(tmp_path):
+    for i in (1, 2, 3):
+        (tmp_path / f"puzzle{i}.txt").write_text("." * 81)
+    (tmp_path / "hard_puzzles.txt").write_text(("." * 81 + "\n") * 5)
+    names = [n for n, _ in bench.collect_puzzles(tmp_path, generated=1, hard_limit=2)]
+    assert names == ["puzzle1", "puzzle2", "puzzle3", "hard0", "hard1", "gen0"]
+    assert [n for n, _ in bench.collect_puzzles(tmp_path, generated=0)] == [
+        "puzzle1", "puzzle2", "puzzle3"]
+
+
+def test_bench_solver_flags_wrong_answer(monkeypatch, puzzle1_grid):
+    import types
+    wrong = types.SimpleNamespace(to_grid=lambda: [["."] * 9 for _ in range(9)])
+    monkeypatch.setattr(bench, "solve_board", lambda board, cfg=None, stats=None: wrong)
+    row = bench.bench_solver("p1", puzzle1_grid, repeat=1)
+    assert row.seconds is None and row.note == "НЕВЕРНОЕ РЕШЕНИЕ"
+
+
+def test_summarize():
+    rows = [bench.BenchRow("a", nodes=3, seconds=0.001), bench.BenchRow("b", nodes=5, seconds=0.004),
+            bench.BenchRow("c", note="нет решения")]
+    text = bench.summarize(rows)
+    assert "решено 2 из 3" in text and "сумма 5.0 мс" in text
+    assert "худший b 4.0 мс" in text and "узлов 8" in text
+    assert bench.summarize([bench.BenchRow("c", note="пропуск")]) == "решено 0 из 1"
