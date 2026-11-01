@@ -1,0 +1,252 @@
+import random
+
+import pytest
+
+import solver
+import sudoku
+from board import Board
+from cell import make_pen
+from solver import DEFAULT_CONFIG, SolveStats, SolverConfig
+
+
+def snapshot(board):
+    return (list(board.states), list(board.digit_cells), list(board.placed),
+            list(board.buckets), board.empty_mask, board.zobrist, board.dirty)
+
+
+def empty_board():
+    return Board.from_grid([["."] * 9 for _ in range(9)])
+
+
+def hide_in_row(board, row, keep_col, d=9):
+    """Цифра d в строке row остаётся только в колонке keep_col."""
+    for c in range(9):
+        if c != keep_col:
+            assert board.eliminate(row * 9 + c, d)
+
+
+def conflicting_singles_board():
+    """Клетки 0 и 1 (один блок) сведены к единственной заметке 9."""
+    b = empty_board()
+    for idx in (0, 1):
+        for d in range(1, 9):
+            assert b.eliminate(idx, d)
+    return b
+
+
+def conflicting_hidden_board():
+    """9 в строке 0 только в клетке 0, 9 в строке 1 только в клетке 10 (тот же блок)."""
+    b = empty_board()
+    hide_in_row(b, 0, 0)
+    hide_in_row(b, 1, 1)
+    return b
+
+
+def test_solve_stats_defaults():
+    s = SolveStats()
+    assert (s.nodes, s.memo_hits, s.region_visits, s.max_depth) == (0, 0, 0, 0)
+
+
+def test_config_defaults_and_frozen():
+    assert DEFAULT_CONFIG == SolverConfig(memo=True, cell_strategy="mrv", branch_strategy="asc")
+    with pytest.raises(Exception):
+        DEFAULT_CONFIG.memo = False
+
+
+def test_config_rejects_unknown_names():
+    with pytest.raises(ValueError):
+        SolverConfig(cell_strategy="nope")
+    with pytest.raises(ValueError):
+        SolverConfig(branch_strategy="nope")
+
+
+def test_select_cell_mrv_prefers_fewest_notes():
+    b = empty_board()
+    assert solver.select_cell_mrv(b) == 0  # все по 9 заметок: младший индекс
+    for d in range(1, 8):
+        assert b.eliminate(5, d)  # у клетки 5 две заметки
+    assert solver.select_cell_mrv(b) == 5
+
+
+def test_select_cell_mrv_tie_goes_to_lowest_index():
+    b = empty_board()
+    for idx in (30, 7):
+        for d in range(1, 8):
+            assert b.eliminate(idx, d)
+    assert solver.select_cell_mrv(b) == 7
+
+
+def test_select_cell_mrv_without_candidates(puzzle1_solution):
+    b = Board.from_grid(puzzle1_solution)
+    with pytest.raises(ValueError):
+        solver.select_cell_mrv(b)
+
+
+def test_branch_asc():
+    b = empty_board()
+    for d in (2, 3, 4, 5, 6, 7, 8):
+        assert b.eliminate(0, d)
+    assert solver.branch_asc(b, 0) == [1, 9]
+
+
+def test_obvious_singles_places_digit():
+    b = empty_board()
+    for d in range(1, 9):
+        assert b.eliminate(0, d)
+    assert solver.obvious_singles(b) is True
+    assert b.states[0] == make_pen(9)
+    assert b.buckets[1] == 0
+    b.validate()
+
+
+def test_obvious_singles_noop_when_nothing_to_do():
+    b = empty_board()
+    snap = snapshot(b)
+    assert solver.obvious_singles(b) is True
+    assert snapshot(b) == snap
+
+
+def test_obvious_singles_detects_contradiction():
+    assert solver.obvious_singles(conflicting_singles_board()) is False
+
+
+def test_hidden_singles_places_digit():
+    b = empty_board()
+    hide_in_row(b, 0, 0)
+    assert b.pending == [(0, 9)]
+    assert solver.hidden_singles(b) is True
+    assert b.states[0] == make_pen(9)
+    assert b.pending == []
+    b.validate()
+
+
+def test_hidden_singles_skips_stale_entries():
+    b = empty_board()
+    assert b.place(5, 3)
+    b.pending = [(5, 3)]  # клетка уже поставлена
+    assert solver.hidden_singles(b) is True and b.pending == []
+    b = empty_board()
+    assert b.eliminate(5, 3)
+    snap = snapshot(b)
+    b.pending = [(5, 3)]  # заметки уже нет
+    assert solver.hidden_singles(b) is True
+    assert snapshot(b) == snap
+
+
+def test_hidden_singles_detects_contradiction():
+    assert solver.hidden_singles(conflicting_hidden_board()) is False
+
+
+def test_propagate_puzzle1_stays_consistent(puzzle1_grid, puzzle1_solution):
+    b = Board.from_grid(puzzle1_grid)
+    assert solver.propagate(b) is True
+    b.validate()
+    for r, row in enumerate(b.to_grid()):
+        for c, v in enumerate(row):
+            assert v in (".", puzzle1_solution[r][c])
+    assert b.buckets[1] == 0 and b.pending == []
+
+
+def test_propagate_reports_contradiction():
+    assert solver.propagate(conflicting_singles_board()) is False
+    assert solver.propagate(conflicting_hidden_board()) is False
+
+
+def test_search_hits_memo():
+    b = empty_board()
+    stats = SolveStats()
+    assert solver.search(b, DEFAULT_CONFIG, stats, {b.zobrist}) is None
+    assert stats.memo_hits == 1 and stats.nodes == 1
+
+
+def test_search_remembers_position():
+    b = empty_board()
+    visited = set()
+    solver.search(b.copy(), DEFAULT_CONFIG, SolveStats(), visited)
+    assert b.zobrist in visited
+    visited = set()
+    solver.search(b.copy(), SolverConfig(memo=False), SolveStats(), visited)
+    assert visited == set()
+
+
+def test_search_contradiction_returns_none():
+    stats = SolveStats()
+    assert solver.search(conflicting_singles_board(), DEFAULT_CONFIG, stats, set()) is None
+    assert stats.nodes == 1
+
+
+def test_search_tracks_depth():
+    stats = SolveStats()
+    assert solver.search(empty_board(), DEFAULT_CONFIG, stats, set()) is not None
+    assert stats.max_depth >= 1 and stats.nodes > stats.max_depth
+
+
+def test_solve_board_puzzle1(puzzle1_grid, puzzle1_solution):
+    b = Board.from_grid(puzzle1_grid)
+    snap = snapshot(b)
+    stats = SolveStats()
+    solved = solver.solve_board(b, stats=stats)
+    assert solved.to_grid() == puzzle1_solution
+    solved.validate()
+    assert snapshot(b) == snap  # вход не мутируется
+    assert stats.nodes >= 1
+
+
+@pytest.mark.parametrize("name", ["puzzle1", "puzzle2", "puzzle3"])
+def test_solve_board_named_puzzles_are_valid(name):
+    grid = sudoku.read_sudoku(f"{name}.txt")
+    solved = solver.solve_board(Board.from_grid(grid))
+    result = solved.to_grid()
+    assert sudoku.check_solution(result)
+    for r in range(9):
+        for c in range(9):
+            assert grid[r][c] in (".", result[r][c])
+
+
+def test_solve_board_special_inputs(puzzle1_solution):
+    solved = solver.solve_board(empty_board())
+    assert sudoku.check_solution(solved.to_grid())
+    full = solver.solve_board(Board.from_grid(puzzle1_solution))
+    assert full.to_grid() == puzzle1_solution
+    assert Board.from_grid([["5", "5"] + ["."] * 7] + [["."] * 9] * 8) is None
+
+
+@pytest.mark.parametrize("memo", [True, False])
+def test_memo_does_not_change_answer(puzzle1_grid, memo):
+    stats = SolveStats()
+    solved = solver.solve_board(Board.from_grid(puzzle1_grid), SolverConfig(memo=memo), stats)
+    assert sudoku.check_solution(solved.to_grid())
+    if not memo:
+        assert stats.memo_hits == 0
+
+
+@pytest.mark.parametrize("seed", range(10))
+def test_matches_naive_on_generated(seed):
+    random.seed(seed)
+    grid = sudoku.generate_sudoku(35)
+    solution = sudoku.solve(grid)
+    assert solution is not None and sudoku.check_solution(solution)
+    for r in range(9):
+        for c in range(9):
+            assert grid[r][c] in (".", solution[r][c])
+    try:
+        naive = sudoku.solve_naive(grid, max_steps=20000)
+    except sudoku.SearchLimitExceeded:
+        return  # naive не справился; сравнивать не с чем
+    assert naive is not None
+
+
+def test_unsolvable_puzzle_gives_none(puzzle1_grid):
+    grid = [row[:] for row in puzzle1_grid]
+    grid[0][2] = "1"  # допустимо локально, но у puzzle1 единственное решение с 4 здесь
+    assert sudoku.solve(grid) is None
+    assert sudoku.solve_naive(grid) is None
+
+
+def test_sudoku_solve_edge_cases(puzzle1_grid, puzzle1_solution):
+    original = [row[:] for row in puzzle1_grid]
+    assert sudoku.solve(puzzle1_grid) == puzzle1_solution
+    assert puzzle1_grid == original
+    dup = [["."] * 9 for _ in range(9)]
+    dup[0][0] = dup[0][1] = "5"
+    assert sudoku.solve(dup) is None

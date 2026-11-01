@@ -12,6 +12,9 @@ from dataclasses import dataclass
 
 import sudoku
 
+from board import Board
+from solver import DEFAULT_CONFIG, SolveStats, SolverConfig, solve_board
+
 ROOT = pathlib.Path(__file__).parent
 Grid = tp.List[tp.List[str]]
 
@@ -89,6 +92,23 @@ def run_benchmark(repeat: int = 3, max_steps: int = 100_000, root: pathlib.Path 
     """Прогнать solve_naive по всему набору."""
     return [bench_naive(n, g, repeat, max_steps) for n, g in collect_puzzles(root, generated)]
 
+def bench_solver(name: str, grid: Grid, cfg: SolverConfig = DEFAULT_CONFIG,
+                 repeat: int = 3) -> BenchRow:
+    """Замерить solve_board: узлы и memo_hits за один прогон, время минимум из repeat."""
+    board = Board.from_grid(grid)
+    if board is None:
+        return BenchRow(name, note="противоречие во входе")
+    stats = SolveStats()
+    if solve_board(board, cfg, stats) is None:
+        return BenchRow(name, nodes=stats.nodes, memo_hits=stats.memo_hits, note="нет решения")
+    seconds = time_min(lambda: solve_board(board, cfg), repeat)
+    return BenchRow(name, nodes=stats.nodes, memo_hits=stats.memo_hits, seconds=seconds)
+
+
+def run_solver_benchmark(cfg: SolverConfig = DEFAULT_CONFIG, repeat: int = 3,
+                         root: pathlib.Path = ROOT, generated: int = 20) -> tp.List[BenchRow]:
+    """Прогнать solve_board с конфигурацией cfg по всему набору."""
+    return [bench_solver(n, g, cfg, repeat) for n, g in collect_puzzles(root, generated)]
 
 def _fmt(value: tp.Optional[tp.Union[int, float]], spec: str = "") -> str:
     return "-" if value is None else format(value, spec)
@@ -115,7 +135,7 @@ def profile_call(func: tp.Callable[[], tp.Any], top: int = 15) -> str:
 
 def main(argv: tp.Optional[tp.List[str]] = None) -> None:  # pragma: no cover
     parser = argparse.ArgumentParser(description="Замеры решателей судоку")
-    parser.add_argument("--profile", action="store_true", help="профиль solve_naive на puzzle1")
+    parser.add_argument("--profile", action="store_true", help="профиль solve_board на puzzle2")
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--max-steps", type=int, default=100_000)
     args = parser.parse_args(argv)
@@ -124,9 +144,11 @@ def main(argv: tp.Optional[tp.List[str]] = None) -> None:  # pragma: no cover
         print("hard_puzzles.txt не найден: пропущено")
     print("solve_naive")
     print(format_table(run_benchmark(args.repeat, args.max_steps)))
+    print(f"solve_board {DEFAULT_CONFIG}")
+    print(format_table(run_solver_benchmark(DEFAULT_CONFIG, args.repeat)))
     if args.profile:
-        grid = load_named_puzzles()["puzzle1"]
-        print(profile_call(lambda: sudoku.solve_naive(grid)))
+        board = Board.from_grid(load_named_puzzles()["puzzle2"])
+        print(profile_call(lambda: solve_board(board)))
 
 
 if __name__ == "__main__":

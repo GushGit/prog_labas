@@ -98,3 +98,26 @@ def test_run_benchmark():
 
 def test_profile_call():
     assert "function calls" in bench.profile_call(lambda: sum(range(10)), top=3)
+
+def test_bench_solver_solved(puzzle1_grid):
+    row = bench.bench_solver("p1", puzzle1_grid, repeat=1)
+    assert row.seconds is not None and row.nodes >= 1 and row.memo_hits >= 0
+    assert row.note == ""
+
+
+def test_bench_solver_input_contradiction():
+    row = bench.bench_solver("dead", dead_end_grid(), repeat=1)
+    assert row.seconds is None and row.note == "противоречие во входе"
+
+
+def test_bench_solver_no_solution(monkeypatch, puzzle1_grid):
+    monkeypatch.setattr(bench, "solve_board", lambda board, cfg=None, stats=None: None)
+    row = bench.bench_solver("p1", puzzle1_grid, repeat=1)
+    assert row.seconds is None and row.note == "нет решения"
+    assert row.nodes == 0 and row.memo_hits == 0
+
+
+def test_run_solver_benchmark():
+    rows = bench.run_solver_benchmark(repeat=1, generated=2)
+    assert [r.puzzle for r in rows] == ["puzzle1", "puzzle2", "puzzle3", "gen0", "gen1"]
+    assert all(r.seconds is not None for r in rows)
