@@ -472,3 +472,19 @@ def test_is_unique(puzzle1_grid, puzzle1_solution):
     dup = [["."] * 9 for _ in range(9)]
     dup[0][0] = dup[0][1] = "5"
     assert sudoku.is_unique(dup) is False  # противоречие во входе
+
+def test_count_solutions_skips_failing_branch(monkeypatch):
+    b = empty_board()
+    for d in range(3, 10):
+        assert b.eliminate(0, d)  # клетка 0: заметки {1, 2}
+    for d in range(2, 10):
+        assert b.eliminate(1, d)  # клетка 1: только 1
+    for d in (1, 3, 4, 5, 6, 7, 8, 9):
+        assert b.eliminate(9, d)  # клетка 9: только 2
+    monkeypatch.setattr(solver, "propagate", lambda board, cfg=None, stats=None: True)
+    assert solver.count_solutions(b) == 0
+
+def test_branch_all_cells_on_empty_board():
+    cfg = SolverConfig(branch_all_cells=True, memo=False)
+    solved = solver.solve_board(empty_board(), cfg)
+    assert sudoku.check_solution(solved.to_grid())

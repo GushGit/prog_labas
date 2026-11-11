@@ -64,7 +64,7 @@ def test_no_collisions_on_random_walk():
     h = hash_state(states)
     seen = {h: tuple(states)}
     distinct = 1
-    for step in range(20000):
+    for step in range(200000):
         idx = rng.randrange(81)
         old = states[idx]
         if rng.random() < 0.7:
