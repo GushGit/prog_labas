@@ -27,7 +27,7 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import cm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import (KeepTogether, PageBreak, Paragraph, Preformatted,
+from reportlab.platypus import (CondPageBreak, KeepTogether, PageBreak, Paragraph, Preformatted,
                                 SimpleDocTemplate, Spacer, Table, TableStyle)
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -41,7 +41,7 @@ CODE_BG = colors.HexColor("#F4F5F7")
 LINE = colors.HexColor("#C9D3E0")
 FOOTER = "Рекомендации и возрастные группы"
 MAX_CODE_LINE = 95
-CODE_CHUNK = 45
+CODE_CHUNK = 20
 
 # документ -> (тип для колонтитула, мин. страниц, макс. страниц, ключевые слова)
 DOCUMENTS = {
@@ -95,10 +95,9 @@ def make_styles() -> dict[str, ParagraphStyle]:
                                 leading=27, textColor=BLUE, spaceAfter=4),
         "subtitle": ParagraphStyle("subtitle", parent=base, textColor=GREY, spaceAfter=10),
         "h2": ParagraphStyle("h2", parent=base, fontName="DejaVuSans-Bold", fontSize=14,
-                             leading=18, textColor=BLUE, spaceBefore=10, spaceAfter=5,
-                             keepWithNext=True),
+                             leading=18, textColor=BLUE, spaceBefore=10, spaceAfter=5),
         "h3": ParagraphStyle("h3", parent=base, fontName="DejaVuSans-Bold", fontSize=11,
-                             leading=15, spaceBefore=6, spaceAfter=3, keepWithNext=True),
+                             leading=15, spaceBefore=6, spaceAfter=3),
         "bullet": ParagraphStyle("bullet", parent=base, leftIndent=14, bulletIndent=3,
                                  spaceAfter=2),
         "cell": ParagraphStyle("cell", parent=base, fontSize=8.5, leading=11, spaceAfter=0),
@@ -170,6 +169,9 @@ def longest_word(cell: str) -> float:
 
 def fit_widths(weights: list[float], minimums: list[float], width: float) -> list[float]:
     """Делит ширину по весам, не опуская столбец ниже ширины его самого длинного слова."""
+    minimums = [min(m, width * 0.45) for m in minimums]
+    if sum(minimums) > width * 0.85:
+        minimums = [m * width * 0.85 / sum(minimums) for m in minimums]
     widths = [width * w / sum(weights) for w in weights]
     fixed: set[int] = set()
     for _ in weights:
@@ -209,6 +211,7 @@ def make_table(rows: list[list[str]], styles: dict, width: float) -> Table:
     ]
     commands += [("BACKGROUND", (0, r), (-1, r), LIGHT) for r in range(2, len(rows), 2)]
     table.setStyle(TableStyle(commands))
+    table.is_data = True
     return table
 
 
@@ -240,7 +243,10 @@ def parse_markdown(text: str, styles: dict, width: float, name: str) -> list:
 
     def flush() -> None:
         if paragraph:
-            story.append(Paragraph(inline(" ".join(paragraph)), styles["body"]))
+            text = " ".join(paragraph)
+            block = Paragraph(inline(text), styles["body"])
+            block.lead = text.endswith(":")
+            story.append(block)
             paragraph.clear()
 
     while i < len(lines):
@@ -297,26 +303,34 @@ def parse_markdown(text: str, styles: dict, width: float, name: str) -> list:
     return keep_headings(story)
 
 
+def is_sticky(item: object) -> bool:
+    """Проверяет, что блок нельзя оставлять внизу страницы: заголовок или подводка с двоеточием."""
+    return isinstance(item, Paragraph) and (item.style.name in ("h2", "h3")
+                                            or getattr(item, "lead", False))
+
+
 def keep_headings(story: list) -> list:
-    """Склеивает заголовок со следующим блоком, чтобы он не остался внизу страницы один."""
-    result = []
+    """Не даёт заголовку или подводке остаться внизу страницы отдельно от следующего блока.
+
+    С кодом и абзацем заголовок склеивается через KeepTogether. Перед таблицей данных
+    ставится CondPageBreak: таблица сама делится между страницами и повторяет шапку.
+    """
+    result: list = []
     i = 0
     while i < len(story):
-        item = story[i]
-        is_heading = isinstance(item, Paragraph) and item.style.name in ("h2", "h3")
-        if is_heading and i + 1 < len(story) and not isinstance(story[i + 1], PageBreak):
-            group = [item]
+        group = []
+        while i < len(story) and is_sticky(story[i]):
+            group.append(story[i])
             i += 1
-            while (i < len(story) and isinstance(story[i], Paragraph)
-                   and story[i].style.name in ("h2", "h3")):
-                group.append(story[i])
-                i += 1
-            if i < len(story) and not isinstance(story[i], PageBreak):
-                group.append(story[i])
-                i += 1
-            result.append(KeepTogether(group))
+        if not group:
+            result.append(story[i])
+            i += 1
+        elif i == len(story) or isinstance(story[i], PageBreak):
+            result += group
+        elif getattr(story[i], "is_data", False):
+            result += [CondPageBreak(5 * cm), *group]
         else:
-            result.append(item)
+            result.append(KeepTogether(group + [story[i]]))
             i += 1
     return result
 

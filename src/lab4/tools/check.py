@@ -39,6 +39,8 @@ EXAMPLES_REQUIRED = {
 }
 EXAMPLE_MOVIES = "1,Мстители: Финал\n2,Хатико\n3,Дюна\n4,Унесенные призраками\n"
 EXAMPLE_HISTORY = "2,1,3\n1,4,3\n2,2,2,2,2,3\n"
+WEIGHTS_MOVIES = "1,Один\n2,Два\n3,Три\n4,Четыре\n"
+WEIGHTS_HISTORY = "1,2,3\n1,4\n1,4\n"
 BOUNDS = ["18", "25", "35", "45", "60", "80", "100"]
 GROUPS_INPUT = (
     "Ярилова Розалия Трофимовна,29\nЕгоров Алан Петрович,7\n"
@@ -203,7 +205,8 @@ def pytest_tail(output: str) -> str:
     """Возвращает таблицу покрытия и итоговую строку из вывода pytest."""
     lines = output.splitlines()
     start = next((i for i, line in enumerate(lines) if line.startswith("Name ")), len(lines))
-    return "\n".join(lines[start:]).strip()
+    return "\n".join(line for line in lines[start:]
+                     if not line.startswith("Coverage JSON written")).strip()
 
 
 def stage_doctest() -> tuple[bool, str]:
@@ -328,6 +331,69 @@ def student_line() -> str:
     return ", ".join(parts)
 
 
+def recommend_trace(movies: str, history_text: str, watched_line: str) -> str:
+    """Строит Markdown-трассировку алгоритма рекомендации настоящими классами пакета."""
+    sys.path.insert(0, str(ROOT))
+    from recommender.app import parse_watched
+    from recommender.catalog import MovieCatalog
+    from recommender.engine import Recommender, overlap
+    from recommender.history import ViewingHistory
+
+    catalog = MovieCatalog.from_lines(movies.splitlines())
+    lines = [line for line in history_text.splitlines() if line.strip()]
+    history = ViewingHistory.from_lines(lines, catalog)
+    watched = parse_watched(watched_line, catalog)
+    engine = Recommender(catalog, history)
+    rows = [f"Ввод `{watched_line}`, `watched = {sorted(watched)}`, "
+            f"`len(watched) = {len(watched)}`.",
+            "", "| История | Общих (`common`) | `2 * common >= len(watched)` | Даёт кандидатов |",
+            "|---|---|---|---|"]
+    candidates: set[int] = set()
+    for line, counts in zip(lines, history.film_counts):
+        common = overlap(watched, counts)
+        chosen = 2 * common >= len(watched)
+        new = sorted(counts.keys() - watched) if chosen else []
+        candidates |= set(new)
+        rows.append(f"| `{line}` | {common} | {'да' if chosen else 'нет'} | "
+                    f"{', '.join(map(str, new)) or '-'} |")
+    weighted = engine._weighted_scores(watched)
+    rows += ["", "| Кандидат | Название | Просмотров по всем историям | Оценка режима весов |",
+             "|---|---|---|---|"]
+    for movie_id in sorted(candidates):
+        rows.append(f"| {movie_id} | {catalog.get(movie_id).title} | {history.views[movie_id]} | "
+                    f"{weighted[movie_id]} |")
+    plain, heavy = engine.recommend(watched), engine.recommend(watched, weighted=True)
+    rows += ["", f"Итог: обычный режим выбирает **{plain.id} «{plain.title}»**, режим весов "
+                 f"выбирает **{heavy.id} «{heavy.title}»**."]
+    return "\n".join(rows)
+
+
+def groups_labels() -> list[str]:
+    """Возвращает метки групп для границ примера §4.3."""
+    sys.path.insert(0, str(ROOT))
+    from age_groups.groups import AgeGroups
+
+    return AgeGroups([int(b) for b in BOUNDS]).labels
+
+
+def groups_trace() -> str:
+    """Строит Markdown-трассировку разбивки примера §4.3 настоящими классами пакета."""
+    sys.path.insert(0, str(ROOT))
+    from age_groups.app import read_respondents
+    from age_groups.groups import AgeGroups
+
+    groups = AgeGroups([int(b) for b in BOUNDS])
+    respondents, _ = read_respondents(GROUPS_INPUT.splitlines())
+    rows = ["| Порядок после сортировки | Ключ `(-age, name)` | `bisect_left` | Группа |",
+            "|---|---|---|---|"]
+    ordered = sorted(respondents, key=lambda person: (-person.age, person.name))
+    for number, person in enumerate(ordered, start=1):
+        index = groups.index_of(person.age)
+        rows.append(f"| {number}. {person.name} | ({-person.age}, …) | {index} | "
+                    f"`{groups.labels[index]}` |")
+    return "\n".join(rows)
+
+
 def write_facts() -> None:
     """Собирает build/facts.json из результатов этапов tests и smoke."""
     totals = STATE["coverage"]["totals"]
@@ -352,6 +418,10 @@ def write_facts() -> None:
         "package_lines": str(sum(len(p.read_text(encoding="utf-8").splitlines())
                                  for p in py_files(*PACKAGES))),
     }
+    facts["trace_example"] = recommend_trace(EXAMPLE_MOVIES, EXAMPLE_HISTORY, "2,4")
+    facts["trace_weights"] = recommend_trace(WEIGHTS_MOVIES, WEIGHTS_HISTORY, "1,2")
+    facts["trace_groups"] = groups_trace()
+    facts["group_labels"] = ", ".join(f"`{label}`" for label in groups_labels())
     facts.update(mutation_facts())
     BUILD.mkdir(exist_ok=True)
     (BUILD / "facts.json").write_text(json.dumps(facts, ensure_ascii=False, indent=2),

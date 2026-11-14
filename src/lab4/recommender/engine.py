@@ -73,12 +73,13 @@ class Recommender:
             >>> Recommender(catalog, history).recommend({1, 2, 3, 4}) is None
             True
         """
-        candidates: set[int] = set()
-        for counts in self.history.film_counts:
-            if 2 * overlap(watched, counts) >= len(watched):
-                candidates |= counts.keys() - watched
+        selected = [counts for counts in self.history.film_counts
+                    if 2 * overlap(watched, counts) >= len(watched)]
+        candidates: set[int] = set().union(*selected) - watched
         if not candidates:
             return None
+        # Шаг 3 условия считает просмотры среди всех пользователей сервиса. Чтобы считать
+        # только по отобранным историям, self.history.views меняется на sum(selected, Counter()).
         score = self._weighted_scores(watched) if weighted else self.history.views
         best = max(candidates, key=lambda movie_id: (score[movie_id], -movie_id))
         return self.catalog.get(best)
